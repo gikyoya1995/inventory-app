@@ -761,14 +761,23 @@ def sync_raw():
             out["product_detail_status"] = resp2.status_code
             out["product_detail_raw"] = resp2.json()
 
-            # 3. stocks サブリソース
+            # 3. options サブリソース（option_id確認用）
             resp3 = requests.get(
+                f"{COLORME_API_BASE}/products/{pid}/options.json",
+                headers=colorme_headers(),
+                timeout=60,
+            )
+            out["options_status"] = resp3.status_code
+            out["options_raw"] = resp3.json()
+
+            # 4. stocks サブリソース
+            resp4 = requests.get(
                 f"{COLORME_API_BASE}/products/{pid}/stocks.json",
                 headers=colorme_headers(),
                 timeout=60,
             )
-            out["stocks_status"] = resp3.status_code
-            out["stocks_raw"] = resp3.json()
+            out["stocks_status"] = resp4.status_code
+            out["stocks_raw"] = resp4.json()
 
     except Exception as e:
         out["exception"] = str(e)
