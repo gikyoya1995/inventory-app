@@ -154,6 +154,13 @@ def colorme_get_all_products() -> list:
             resp.raise_for_status()
             data  = resp.json()
             batch = data.get("products", [])
+
+            # デバッグ: 最初のページの先頭1件の生データをログに出力
+            if offset == 0 and batch:
+                app.logger.info(
+                    f"[DEBUG] 先頭商品の生レスポンス: {json.dumps(batch[0], ensure_ascii=False, indent=2)}"
+                )
+
             products.extend(batch)
 
             app.logger.info(
