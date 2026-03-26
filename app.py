@@ -83,8 +83,10 @@ def init_db():
         conn.commit()
 
 
-def normalize_code(s: str) -> str:
+def normalize_code(s) -> str:
     """商品コード照合用の正規化：前後スペース除去＋全角英数字→半角。"""
+    if s is None:
+        return ""
     return unicodedata.normalize("NFKC", s.strip())
 
 
