@@ -131,15 +131,18 @@ def colorme_headers() -> dict:
     }
 
 
-def colorme_get_all_products() -> list:
-    """カラーミー全商品を毎回APIから取得（キャッシュなし・ページネーション対応）。"""
+def colorme_get_all_products() -> tuple:
+    """カラーミー全商品を取得（ページネーション対応）。
+    戻り値: (products: list, api_total: int)
+    api_total は API の meta.total（取得できない場合は実取得数）。
+    """
     http = requests.Session()
     http.headers.update(colorme_headers())
 
-    products = []
-    limit    = 100
-    offset   = 0
-    total    = None  # 初回レスポンスの meta.total で確定
+    products  = []
+    limit     = 100
+    offset    = 0
+    api_total = None  # 表示用のみ。終了判定には使わない
 
     try:
         while True:
@@ -151,35 +154,26 @@ def colorme_get_all_products() -> list:
             resp.raise_for_status()
             data  = resp.json()
             batch = data.get("products", [])
+
+            if api_total is None:
+                api_total = data.get("meta", {}).get("total")
+                app.logger.info(f"カラーミーAPI: 全件数={api_total}")
+
             products.extend(batch)
-
-            # 初回のみ全件数を取得
-            if total is None:
-                total = data.get("meta", {}).get("total", None)
-                app.logger.info(f"カラーミーAPI: 全件数={total}")
-
             app.logger.info(
                 f"カラーミーAPI取得: offset={offset}, 取得={len(batch)}, 累計={len(products)}"
-                + (f"/{total}" if total is not None else "")
+                + (f"/{api_total}" if api_total is not None else "")
             )
 
-            # 終了判定: meta.total が使える場合はそちらを優先
-            if total is not None:
-                if len(products) >= total:
-                    break
-            else:
-                if len(batch) < limit:
-                    break
-
-            # 取得件数が0なら無限ループ防止
-            if len(batch) == 0:
+            # 取得件数が limit 未満なら最終ページ（最も確実な終了判定）
+            if len(batch) < limit:
                 break
 
             offset += limit
     finally:
         http.close()
 
-    return products
+    return products, (api_total if api_total is not None else len(products))
 
 
 # ─── バックグラウンド同期ジョブ管理 ───────────────────────────────────────────
@@ -192,7 +186,7 @@ def _run_sync_push(job_id: str) -> None:
     """sync_push の重い処理をバックグラウンドスレッドで実行する。"""
     with app.app_context():
         try:
-            cm_products = colorme_get_all_products()
+            cm_products, _ = colorme_get_all_products()
 
             cm_variant_index = {}
             for cm_p in cm_products:
@@ -263,7 +257,7 @@ def _run_sync_pull(job_id: str) -> None:
     """sync_pull の重い処理をバックグラウンドスレッドで実行する。"""
     with app.app_context():
         try:
-            cm_products = colorme_get_all_products()
+            cm_products, _ = colorme_get_all_products()
 
             updated   = []
             not_found = []
@@ -831,10 +825,11 @@ def sync_variants():
         return redirect(url_for("settings"))
 
     variants_with_model = []
+    total_products = 0
     error = None
 
     try:
-        cm_products = colorme_get_all_products()
+        cm_products, total_products = colorme_get_all_products()
         for cm_p in cm_products:
             variants = cm_p.get("variants", [])
             if not isinstance(variants, list):
@@ -854,6 +849,7 @@ def sync_variants():
                     })
     except Exception as e:
         error = str(e)
+        total_products = 0
 
     # ローカル商品コードとの照合
     with get_db() as conn:
@@ -867,6 +863,7 @@ def sync_variants():
         variants=variants_with_model,
         local_codes=local_codes,
         error=error,
+        total_products=total_products,
     )
 
 
@@ -931,7 +928,7 @@ def sync_debug():
     debug = {"cm_stocks": [], "local_products": [], "error": None}
 
     try:
-        cm_products = colorme_get_all_products()
+        cm_products, _ = colorme_get_all_products()
         count = 0
         for cm_p in cm_products:
             variants = cm_p.get("variants", [])
