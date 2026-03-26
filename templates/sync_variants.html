@@ -16,15 +16,9 @@
   <span class="badge bg-success">ローカル一致</span> はBPS-60の商品コードと一致するものです。
 </div>
 
-{% if total_products %}
-<div class="alert alert-light border mb-3 py-2 small">
-  カラーミーAPIから取得した総商品数：<strong>{{ total_products }}</strong> 件
-</div>
-{% endif %}
-
 {% if variants %}
 <div class="mb-2">
-  型番付きオプション 全 <strong>{{ variants | length }}</strong> 件
+  全 <strong>{{ variants | length }}</strong> 件
   （うちローカル一致：<strong>{{ variants | selectattr('model_number', 'in', local_codes) | list | length }}</strong> 件）
 </div>
 

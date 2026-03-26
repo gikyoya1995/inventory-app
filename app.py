@@ -6,10 +6,7 @@ import os
 import secrets
 import smtplib
 import sqlite3
-import threading
-import unicodedata
 import urllib.parse
-import uuid
 from email.mime.text import MIMEText
 
 import requests
@@ -89,16 +86,6 @@ def is_restricted_product(name: str) -> bool:
     return any(kw in name for kw in RESTRICTED_KEYWORDS)
 
 
-def normalize_code(s: str) -> str:
-    """商品コード照合用の正規化：前後スペース除去＋全角英数字→半角。"""
-    return unicodedata.normalize("NFKC", s.strip())
-
-
-def default_redirect_uri() -> str:
-    base = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("APP_URL") or "http://localhost:5001"
-    return base.rstrip("/") + "/oauth/callback"
-
-
 # ─── 設定ヘルパー ──────────────────────────────────────────────────────────────
 
 def get_setting(key: str, default: str = "") -> str:
@@ -137,18 +124,17 @@ def colorme_headers() -> dict:
     }
 
 
-def colorme_get_all_products() -> tuple:
-    """カラーミー全商品を取得（ページネーション対応）。
-    戻り値: (products: list, api_total: int)
-    api_total は API の meta.total（取得できない場合は実取得数）。
+def colorme_get_all_products() -> list:
+    """カラーミー全商品を毎回APIから取得（キャッシュなし・ページネーション対応）。
+    limit は API の最大値 50 を使用。
+    取得件数 < limit になったら最終ページと判定して終了。
     """
     http = requests.Session()
     http.headers.update(colorme_headers())
 
-    products  = []
-    limit     = 100
-    offset    = 0
-    api_total = None  # 表示用のみ。終了判定には使わない
+    products = []
+    limit    = 50   # カラーミーAPIの最大値
+    offset   = 0
 
     try:
         while True:
@@ -160,18 +146,13 @@ def colorme_get_all_products() -> tuple:
             resp.raise_for_status()
             data  = resp.json()
             batch = data.get("products", [])
-
-            if api_total is None:
-                api_total = data.get("meta", {}).get("total")
-                app.logger.info(f"カラーミーAPI: 全件数={api_total}")
-
             products.extend(batch)
+
             app.logger.info(
                 f"カラーミーAPI取得: offset={offset}, 取得={len(batch)}, 累計={len(products)}"
-                + (f"/{api_total}" if api_total is not None else "")
             )
 
-            # 取得件数が limit 未満なら最終ページ（最も確実な終了判定）
+            # 取得件数が limit 未満 → 最終ページ
             if len(batch) < limit:
                 break
 
@@ -179,139 +160,7 @@ def colorme_get_all_products() -> tuple:
     finally:
         http.close()
 
-    return products, (api_total if api_total is not None else len(products))
-
-
-# ─── バックグラウンド同期ジョブ管理 ───────────────────────────────────────────
-
-# job_id -> {"status": "running"|"done"|"error", "result": {...}, "message": "..."}
-_sync_jobs: dict = {}
-
-
-def _run_sync_push(job_id: str) -> None:
-    """sync_push の重い処理をバックグラウンドスレッドで実行する。"""
-    with app.app_context():
-        try:
-            cm_products, _ = colorme_get_all_products()
-
-            cm_variant_index = {}
-            for cm_p in cm_products:
-                variants = cm_p.get("variants", [])
-                if not isinstance(variants, list):
-                    continue
-                for variant in variants:
-                    if not isinstance(variant, dict):
-                        continue
-                    model_num = normalize_code(variant.get("model_number", ""))
-                    if model_num:
-                        cm_variant_index[model_num] = {
-                            "product_id":    cm_p["id"],
-                            "option1_value": variant.get("option1_value"),
-                            "option2_value": variant.get("option2_value"),
-                            "product_name":  cm_p.get("name", ""),
-                        }
-
-            with get_db() as conn:
-                local_products = conn.execute("SELECT * FROM products").fetchall()
-
-            updated   = []
-            skipped   = []
-            not_found = []
-            errors    = []
-
-            for lp in local_products:
-                code  = normalize_code(lp["product_code"])
-                match = cm_variant_index.get(code)
-                if not match:
-                    not_found.append({"code": code, "name": lp["name"]})
-                    continue
-
-                variant_payload = {"stocks": lp["stock"]}
-                if match["option1_value"] is not None:
-                    variant_payload["option1_value"] = match["option1_value"]
-                if match["option2_value"] is not None:
-                    variant_payload["option2_value"] = match["option2_value"]
-
-                try:
-                    resp = requests.put(
-                        f"{COLORME_API_BASE}/products/{match['product_id']}.json",
-                        headers=colorme_headers(),
-                        json={"product": {"variants": [variant_payload]}},
-                        timeout=15,
-                    )
-                    resp.raise_for_status()
-                    updated.append({"code": code, "name": lp["name"], "stock": lp["stock"]})
-                except requests.RequestException as e:
-                    errors.append({"code": code, "name": lp["name"], "error": str(e)})
-
-            result = {
-                "direction": "push",
-                "updated":   updated,
-                "skipped":   skipped,
-                "not_found": not_found,
-                "errors":    errors,
-            }
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            set_setting("last_sync_push",   now_str)
-            set_setting("last_sync_result", json.dumps(result, ensure_ascii=False))
-            _sync_jobs[job_id] = {"status": "done", "result": result}
-        except Exception as e:
-            _sync_jobs[job_id] = {"status": "error", "message": str(e)}
-
-
-def _run_sync_pull(job_id: str) -> None:
-    """sync_pull の重い処理をバックグラウンドスレッドで実行する。"""
-    with app.app_context():
-        try:
-            cm_products, _ = colorme_get_all_products()
-
-            updated   = []
-            not_found = []
-
-            with get_db() as conn:
-                # ローカル商品コードを正規化してメモリ上にインデックス化
-                # normalize_code(product_code) -> product_code（元の値）
-                local_index = {
-                    normalize_code(row["product_code"]): row["product_code"]
-                    for row in conn.execute("SELECT product_code FROM products").fetchall()
-                }
-
-                for cm_p in cm_products:
-                    product_name = cm_p.get("name", "")
-                    variants = cm_p.get("variants", [])
-                    if not isinstance(variants, list):
-                        continue
-                    for variant in variants:
-                        if not isinstance(variant, dict):
-                            continue
-                        code     = normalize_code(variant.get("model_number", ""))
-                        quantity = variant.get("stocks", 0)
-                        if not code:
-                            continue
-                        original_code = local_index.get(code)
-                        if original_code:
-                            conn.execute(
-                                "UPDATE products SET stock=?, updated_at=CURRENT_TIMESTAMP WHERE product_code=?",
-                                (quantity, original_code),
-                            )
-                            updated.append({"code": original_code, "name": product_name, "stock": quantity})
-                        else:
-                            not_found.append({"code": code, "name": product_name})
-                conn.commit()
-                check_and_alert(conn)
-
-            result = {
-                "direction": "pull",
-                "updated":   updated,
-                "not_found": not_found,
-                "errors":    [],
-            }
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            set_setting("last_sync_pull",   now_str)
-            set_setting("last_sync_result", json.dumps(result, ensure_ascii=False))
-            _sync_jobs[job_id] = {"status": "done", "result": result}
-        except Exception as e:
-            _sync_jobs[job_id] = {"status": "error", "message": str(e)}
+    return products
 
 
 # ─── メール通知 ────────────────────────────────────────────────────────────────
@@ -702,7 +551,7 @@ def settings():
         "settings.html",
         client_id=get_setting("client_id"),
         client_secret=get_setting("client_secret"),
-        redirect_uri=get_setting("redirect_uri", default_redirect_uri()),
+        redirect_uri=get_setting("redirect_uri", "http://localhost:5001/oauth/callback"),
         is_connected=colorme_is_connected(),
         access_token_preview=get_setting("access_token")[:8] + "…" if get_setting("access_token") else "",
     )
@@ -713,7 +562,7 @@ def settings():
 @app.route("/oauth/start")
 def oauth_start():
     client_id    = get_setting("client_id")
-    redirect_uri = get_setting("redirect_uri", default_redirect_uri())
+    redirect_uri = get_setting("redirect_uri", "http://localhost:5001/oauth/callback")
 
     if not client_id:
         flash("先にクライアントIDを設定してください。", "danger")
@@ -751,7 +600,7 @@ def oauth_callback():
     code         = request.args.get("code")
     client_id    = get_setting("client_id")
     client_secret = get_setting("client_secret")
-    redirect_uri = get_setting("redirect_uri", default_redirect_uri())
+    redirect_uri = get_setting("redirect_uri", "http://localhost:5001/oauth/callback")
 
     if not code:
         flash("認証コードが取得できませんでした。", "danger")
@@ -809,23 +658,13 @@ def sync():
 
     last_result_json = get_setting("last_sync_result", "")
     last_result = json.loads(last_result_json) if last_result_json else None
-    job_id = request.args.get("job")
 
     return render_template(
         "sync.html",
         last_push=get_setting("last_sync_push"),
         last_pull=get_setting("last_sync_pull"),
         last_result=last_result,
-        job_id=job_id,
     )
-
-
-@app.route("/sync/status/<job_id>")
-def sync_job_status(job_id):
-    job = _sync_jobs.get(job_id)
-    if not job:
-        return {"status": "not_found"}, 404
-    return job
 
 
 @app.route("/sync/variants")
@@ -836,11 +675,10 @@ def sync_variants():
         return redirect(url_for("settings"))
 
     variants_with_model = []
-    total_products = 0
     error = None
 
     try:
-        cm_products, total_products = colorme_get_all_products()
+        cm_products = colorme_get_all_products()
         for cm_p in cm_products:
             variants = cm_p.get("variants", [])
             if not isinstance(variants, list):
@@ -860,7 +698,6 @@ def sync_variants():
                     })
     except Exception as e:
         error = str(e)
-        total_products = 0
 
     # ローカル商品コードとの照合
     with get_db() as conn:
@@ -874,7 +711,6 @@ def sync_variants():
         variants=variants_with_model,
         local_codes=local_codes,
         error=error,
-        total_products=total_products,
     )
 
 
@@ -939,7 +775,7 @@ def sync_debug():
     debug = {"cm_stocks": [], "local_products": [], "error": None}
 
     try:
-        cm_products, _ = colorme_get_all_products()
+        cm_products = colorme_get_all_products()
         count = 0
         for cm_p in cm_products:
             variants = cm_p.get("variants", [])
@@ -978,37 +814,151 @@ def sync_debug():
 
 @app.route("/sync/push", methods=["POST"])
 def sync_push():
-    """ローカルの在庫数をカラーミーショップに反映する（バックグラウンド実行）。"""
+    """ローカルの在庫数をカラーミーショップに反映する。"""
     if not colorme_is_connected():
         flash("カラーミーショップと連携されていません。", "danger")
         return redirect(url_for("settings"))
 
-    job_id = str(uuid.uuid4())
-    _sync_jobs[job_id] = {"status": "running"}
-    threading.Thread(target=_run_sync_push, args=(job_id,), daemon=True).start()
-    return redirect(url_for("sync", job=job_id))
+    try:
+        cm_products = colorme_get_all_products()
+    except requests.RequestException as e:
+        flash(f"カラーミーからの商品取得に失敗しました: {e}", "danger")
+        return redirect(url_for("sync"))
+
+    # variants レベルの型番でインデックス化
+    # variant.model_number -> {product_id, option1_value, option2_value, product_name}
+    cm_variant_index = {}
+    for cm_p in cm_products:
+        variants = cm_p.get("variants", [])
+        if not isinstance(variants, list):
+            continue
+        for variant in variants:
+            if not isinstance(variant, dict):
+                continue
+            model_num = variant.get("model_number", "")
+            if model_num:
+                cm_variant_index[model_num] = {
+                    "product_id":    cm_p["id"],
+                    "option1_value": variant.get("option1_value"),
+                    "option2_value": variant.get("option2_value"),
+                    "product_name":  cm_p.get("name", ""),
+                }
+
+    with get_db() as conn:
+        local_products = conn.execute("SELECT * FROM products").fetchall()
+
+    updated   = []
+    skipped   = []
+    not_found = []
+    errors    = []
+
+    for lp in local_products:
+        code  = lp["product_code"]
+        match = cm_variant_index.get(code)
+
+        if not match:
+            not_found.append({"code": code, "name": lp["name"]})
+            continue
+
+        # variantをoption値で特定してstocksを更新
+        variant_payload = {"stocks": lp["stock"]}
+        if match["option1_value"] is not None:
+            variant_payload["option1_value"] = match["option1_value"]
+        if match["option2_value"] is not None:
+            variant_payload["option2_value"] = match["option2_value"]
+
+        try:
+            resp = requests.put(
+                f"{COLORME_API_BASE}/products/{match['product_id']}.json",
+                headers=colorme_headers(),
+                json={"product": {"variants": [variant_payload]}},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            updated.append({"code": code, "name": lp["name"], "stock": lp["stock"]})
+        except requests.RequestException as e:
+            errors.append({"code": code, "name": lp["name"], "error": str(e)})
+
+    result = {
+        "direction": "push",
+        "updated":   updated,
+        "skipped":   skipped,
+        "not_found": not_found,
+        "errors":    errors,
+    }
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    set_setting("last_sync_push",   now_str)
+    set_setting("last_sync_result", json.dumps(result, ensure_ascii=False))
+
+    flash(f"プッシュ完了：{len(updated)} 件更新、{len(not_found)} 件未マッチ、{len(errors)} 件エラー", "success" if not errors else "warning")
+    return redirect(url_for("sync"))
 
 
 @app.route("/sync/pull", methods=["POST"])
 def sync_pull():
-    """カラーミーショップの在庫数をローカルに反映する（バックグラウンド実行）。"""
+    """カラーミーショップの在庫数をローカルに反映する。"""
     if not colorme_is_connected():
         flash("カラーミーショップと連携されていません。", "danger")
         return redirect(url_for("settings"))
 
-    job_id = str(uuid.uuid4())
-    _sync_jobs[job_id] = {"status": "running"}
-    threading.Thread(target=_run_sync_pull, args=(job_id,), daemon=True).start()
-    return redirect(url_for("sync", job=job_id))
+    try:
+        cm_products = colorme_get_all_products()
+    except requests.RequestException as e:
+        flash(f"カラーミーからの商品取得に失敗しました: {e}", "danger")
+        return redirect(url_for("sync"))
 
+    updated   = []
+    not_found = []
 
-# ─── 起動時DB初期化（gunicorn含む全起動方式で実行） ────────────────────────────
+    with get_db() as conn:
+        for cm_p in cm_products:
+            product_name = cm_p.get("name", "")
+            variants = cm_p.get("variants", [])
+            if not isinstance(variants, list):
+                continue
 
-with app.app_context():
-    init_db()
+            for variant in variants:
+                if not isinstance(variant, dict):
+                    continue
+
+                code     = variant.get("model_number", "")
+                quantity = variant.get("stocks", 0)
+                if not code:
+                    continue
+
+                existing = conn.execute(
+                    "SELECT id FROM products WHERE product_code=?", (code,)
+                ).fetchone()
+
+                if existing:
+                    conn.execute(
+                        "UPDATE products SET stock=?, updated_at=CURRENT_TIMESTAMP WHERE product_code=?",
+                        (quantity, code),
+                    )
+                    updated.append({"code": code, "name": product_name, "stock": quantity})
+                else:
+                    not_found.append({"code": code, "name": product_name})
+
+        conn.commit()
+        check_and_alert(conn)
+
+    result = {
+        "direction": "pull",
+        "updated":   updated,
+        "not_found": not_found,
+        "errors":    [],
+    }
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    set_setting("last_sync_pull",   now_str)
+    set_setting("last_sync_result", json.dumps(result, ensure_ascii=False))
+
+    flash(f"プル完了：{len(updated)} 件更新、{len(not_found)} 件はローカル未登録（スキップ）", "success")
+    return redirect(url_for("sync"))
+
 
 # ─── エントリポイント ──────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    init_db()
     port = int(os.environ.get("PORT", 5001))
     app.run(debug=True, port=port)
