@@ -968,9 +968,13 @@ def sync_pull():
     return redirect(url_for("sync"))
 
 
+# ─── 起動時DB初期化（gunicorn含む全起動方式で実行） ────────────────────────────
+
+with app.app_context():
+    init_db()
+
 # ─── エントリポイント ──────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    init_db()
     port = int(os.environ.get("PORT", 5001))
     app.run(debug=True, port=port)
