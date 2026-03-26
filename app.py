@@ -149,7 +149,7 @@ def colorme_get_all_products() -> list:
             resp = http.get(
                 f"{COLORME_API_BASE}/products.json",
                 params={"limit": limit, "offset": offset},
-                timeout=15,
+                timeout=60,
             )
             resp.raise_for_status()
             data  = resp.json()
@@ -625,7 +625,7 @@ def oauth_callback():
                 "code":          code,
                 "redirect_uri":  redirect_uri,
             },
-            timeout=15,
+            timeout=60,
         )
         resp.raise_for_status()
         token_data = resp.json()
@@ -736,7 +736,7 @@ def sync_raw():
             f"{COLORME_API_BASE}/products.json",
             headers=colorme_headers(),
             params={"limit": 1, "offset": 0},
-            timeout=15,
+            timeout=60,
         )
         out["products_status"] = resp.status_code
         data = resp.json()
@@ -749,7 +749,7 @@ def sync_raw():
             resp2 = requests.get(
                 f"{COLORME_API_BASE}/products/{pid}.json",
                 headers=colorme_headers(),
-                timeout=15,
+                timeout=60,
             )
             out["product_detail_status"] = resp2.status_code
             out["product_detail_raw"] = resp2.json()
@@ -758,7 +758,7 @@ def sync_raw():
             resp3 = requests.get(
                 f"{COLORME_API_BASE}/products/{pid}/stocks.json",
                 headers=colorme_headers(),
-                timeout=15,
+                timeout=60,
             )
             out["stocks_status"] = resp3.status_code
             out["stocks_raw"] = resp3.json()
@@ -876,7 +876,7 @@ def sync_push():
                 f"{COLORME_API_BASE}/products/{match['product_id']}/options/{match['option_id']}.json",
                 headers=colorme_headers(),
                 json={"option": {"stock": lp["stock"]}},
-                timeout=15,
+                timeout=60,
             )
             resp.raise_for_status()
             updated.append({"code": lp["product_code"], "name": lp["name"], "stock": lp["stock"]})
