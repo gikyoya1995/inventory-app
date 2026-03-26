@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}注文制限管理{% endblock %}
+
+{% block content %}
+<h2 class="mb-4">注文制限管理（月1本制限商品）</h2>
+
+<div class="row g-4">
+  <!-- 左：チェック・記録フォーム -->
+  <div class="col-md-5">
+    <div class="card mb-3">
+      <div class="card-header fw-bold">注文可否チェック</div>
+      <div class="card-body">
+        <form method="post">
+          <div class="mb-3">
+            <label class="form-label">お客様コード</label>
+            <input type="text" name="customer_code" class="form-control" placeholder="例: C00123"
+                   value="{{ check_result.customer_code if check_result else '' }}" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">商品コード</label>
+            <input type="text" name="product_code" class="form-control" placeholder="例: SAKE-004"
+                   value="{{ check_result.product.product_code if check_result and check_result.product else '' }}"
+                   list="restricted-products" required>
+            <datalist id="restricted-products">
+              {% for p in restricted_products %}
+                <option value="{{ p.product_code }}">{{ p.name }}</option>
+              {% endfor %}
+            </datalist>
+          </div>
+          <div class="d-flex gap-2">
+            <button type="submit" name="action" value="check" class="btn btn-outline-primary">チェックのみ</button>
+            <button type="submit" name="action" value="record" class="btn btn-success">注文を記録する</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- チェック結果 -->
+    {% if check_result %}
+    <div class="alert {{ 'alert-success' if check_result.ok else 'alert-danger' }}">
+      <strong>{{ '注文可能' if check_result.ok else '注文不可' }}</strong><br>
+      {{ check_result.message }}
+      {% if check_result.ok %}
+      <form method="post" class="mt-2">
+        <input type="hidden" name="customer_code" value="{{ check_result.customer_code }}">
+        <input type="hidden" name="product_code" value="{{ check_result.product.product_code }}">
+        <button type="submit" name="action" value="record" class="btn btn-sm btn-success">
+          このまま注文を記録する
+        </button>
+      </form>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    <!-- 制限対象商品一覧 -->
+    <div class="card">
+      <div class="card-header fw-bold">制限対象商品一覧</div>
+      {% if restricted_products %}
+      <ul class="list-group list-group-flush">
+        {% for p in restricted_products %}
+        <li class="list-group-item d-flex justify-content-between align-items-center">
+          <div>
+            <code class="me-2">{{ p.product_code }}</code>{{ p.name }}
+          </div>
+          <span class="badge bg-warning text-dark">月1本</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <div class="card-body text-muted small">制限対象商品はありません。</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- 右：今月の注文記録 -->
+  <div class="col-md-7">
+    <div class="card">
+      <div class="card-header fw-bold">
+        {{ current_year }}年{{ current_month }}月の注文記録
+        <span class="badge bg-secondary ms-1">{{ monthly_records | length }} 件</span>
+      </div>
+      {% if monthly_records %}
+      <div class="table-responsive">
+        <table class="table table-sm table-hover mb-0 align-middle">
+          <thead class="table-light">
+            <tr>
+              <th>お客様コード</th>
+              <th>商品コード</th>
+              <th>商品名</th>
+              <th>記録日時</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in monthly_records %}
+            <tr>
+              <td><code>{{ r.customer_code }}</code></td>
+              <td><code>{{ r.product_code }}</code></td>
+              <td>{{ r.product_name or '—' }}</td>
+              <td><small class="text-muted">{{ r.created_at }}</small></td>
+              <td>
+                <form method="post" action="/orders/{{ r.id }}/delete"
+                      onsubmit="return confirm('この注文記録を削除しますか？')">
+                  <button type="submit" class="btn btn-sm btn-outline-danger">削除</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="card-body text-muted">今月の注文記録はありません。</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

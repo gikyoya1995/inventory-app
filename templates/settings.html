@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}設定{% endblock %}
+
+{% block content %}
+<h2 class="mb-4">設定</h2>
+<div class="row g-4">
+
+  <!-- カラーミーAPI設定 -->
+  <div class="col-md-6">
+    <div class="card mb-3">
+      <div class="card-header fw-bold">カラーミーショップ API 設定</div>
+      <div class="card-body">
+        <form method="post">
+          <div class="mb-3">
+            <label class="form-label">クライアントID</label>
+            <input type="text" name="client_id" class="form-control font-monospace"
+                   value="{{ client_id }}" placeholder="カラーミーアプリのクライアントID" autocomplete="off">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">クライアントシークレット</label>
+            <input type="password" name="client_secret" class="form-control font-monospace"
+                   value="{{ client_secret }}" placeholder="クライアントシークレット" autocomplete="new-password">
+            <div class="form-text">入力欄が空のまま保存すると現在の値を保持します。</div>
+          </div>
+          <div class="mb-4">
+            <label class="form-label">リダイレクトURI</label>
+            <input type="text" name="redirect_uri" class="form-control font-monospace"
+                   value="{{ redirect_uri }}" placeholder="http://localhost:5001/oauth/callback">
+            <div class="form-text">
+              カラーミーアプリの管理画面に登録したリダイレクトURIと一致させてください。
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary">保存</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- 連携状態 -->
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header fw-bold">カラーミーショップ 連携状態</div>
+      <div class="card-body">
+        {% if is_connected %}
+          <div class="alert alert-success mb-3">
+            <strong>連携中</strong><br>
+            アクセストークン: <code>{{ access_token_preview }}</code>
+          </div>
+          <a href="/sync" class="btn btn-outline-primary me-2">在庫同期ページへ</a>
+          <form method="post" action="/oauth/disconnect" style="display:inline"
+                onsubmit="return confirm('連携を解除しますか？')">
+            <button type="submit" class="btn btn-outline-danger">連携解除</button>
+          </form>
+        {% else %}
+          <div class="alert alert-secondary mb-3">
+            未連携
+          </div>
+          {% if client_id %}
+            <a href="/oauth/start" class="btn btn-success">
+              カラーミーショップと連携する（OAuth認証）
+            </a>
+          {% else %}
+            <p class="text-muted small">クライアントIDを入力して保存すると連携ボタンが表示されます。</p>
+          {% endif %}
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card mt-3">
+      <div class="card-header fw-bold">連携手順</div>
+      <div class="card-body small">
+        <ol class="mb-0">
+          <li>カラーミーショップの <strong>アプリ開発者ページ</strong> でアプリを登録</li>
+          <li>クライアントIDとクライアントシークレットを取得</li>
+          <li>リダイレクトURIにこのサーバーの <code>/oauth/callback</code> を登録</li>
+          <li>上のフォームに入力して「保存」</li>
+          <li>「カラーミーショップと連携する」ボタンをクリックして認証</li>
+        </ol>
+        <hr>
+        <p class="mb-0 text-muted">
+          必要なスコープ: <code>read_products</code> <code>write_products</code>
+        </p>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

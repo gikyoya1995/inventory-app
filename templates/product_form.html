@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{% if action == "add" %}商品追加{% else %}商品編集{% endif %}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6">
+    <h2 class="mb-4">{% if action == "add" %}商品追加{% else %}商品編集{% endif %}</h2>
+    <form method="post">
+      <div class="mb-3">
+        <label class="form-label fw-bold">商品コード <span class="text-danger">*</span></label>
+        <input type="text" name="product_code" class="form-control"
+               value="{{ product.product_code if product.product_code else '' }}"
+               {% if action == "edit" %}readonly{% endif %}
+               required>
+        {% if action == "edit" %}
+          <div class="form-text">商品コードは変更できません。</div>
+        {% endif %}
+      </div>
+      <div class="mb-3">
+        <label class="form-label fw-bold">商品名 <span class="text-danger">*</span></label>
+        <input type="text" name="name" class="form-control"
+               value="{{ product.name if product.name else '' }}" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label fw-bold">在庫数 <span class="text-danger">*</span></label>
+        <input type="number" name="stock" class="form-control" min="0"
+               value="{{ product.stock if product.stock is defined else 0 }}" required>
+      </div>
+      <div class="mb-4">
+        <label class="form-label fw-bold">価格（円）</label>
+        <input type="number" name="price" class="form-control" min="0"
+               value="{{ product.price if product.price is defined else 0 }}">
+      </div>
+      <div class="d-flex gap-2">
+        <button type="submit" class="btn btn-primary">
+          {% if action == "add" %}追加する{% else %}更新する{% endif %}
+        </button>
+        <a href="/" class="btn btn-outline-secondary">キャンセル</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

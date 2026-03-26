@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}同期デバッグ{% endblock %}
+
+{% block content %}
+<h2 class="mb-4">同期デバッグ情報</h2>
+
+{% if debug.error %}
+<div class="alert alert-danger">
+  <strong>カラーミーAPI取得エラー：</strong> {{ debug.error }}
+</div>
+{% endif %}
+
+<div class="row g-4">
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header fw-bold bg-primary text-white">
+        カラーミー オプション（先頭3件）
+      </div>
+      {% if debug.cm_stocks %}
+      {% for s in debug.cm_stocks %}
+      <div class="card-body border-bottom">
+        <table class="table table-sm table-bordered mb-0 small">
+          <tr><th style="width:40%">product_id</th><td><code>{{ s.product_id }}</code></td></tr>
+          <tr><th>product_name</th><td>{{ s.product_name }}</td></tr>
+          <tr class="table-warning"><th>model_number（型番）</th><td><code>{{ s.model_number if s.model_number else '（空）' }}</code></td></tr>
+          <tr><th>option1_value</th><td>{{ s.option1_value if s.option1_value else '（なし）' }}</td></tr>
+          <tr><th>option2_value</th><td>{{ s.option2_value if s.option2_value else '（なし）' }}</td></tr>
+          <tr><th>stocks（在庫数）</th><td>{{ s.stocks }}</td></tr>
+        </table>
+      </div>
+      {% endfor %}
+      {% else %}
+      <div class="card-body text-muted">オプションデータが取得できませんでした。</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header fw-bold bg-success text-white">
+        ローカル 商品コード（先頭3件）
+      </div>
+      {% if debug.local_products %}
+      {% for p in debug.local_products %}
+      <div class="card-body border-bottom">
+        <table class="table table-sm table-bordered mb-0 small">
+          <tr class="table-warning"><th style="width:40%">product_code</th><td><code>{{ p.product_code }}</code></td></tr>
+          <tr><th>name</th><td>{{ p.name }}</td></tr>
+        </table>
+      </div>
+      {% endfor %}
+      {% else %}
+      <div class="card-body text-muted">ローカル商品が登録されていません。</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="mt-3 text-muted small">
+  マッチング条件：カラーミーの <code>model_number（型番）</code> = ローカルの <code>product_code</code>
+</div>
+<div class="mt-3">
+  <a href="/sync" class="btn btn-outline-secondary">← 同期ページへ戻る</a>
+</div>
+{% endblock %}

@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}商品一覧{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h2 class="mb-0">商品一覧</h2>
+  <a href="/products/add" class="btn btn-primary">+ 商品追加</a>
+</div>
+
+{% if products %}
+<div class="table-responsive">
+  <table class="table table-hover align-middle">
+    <thead>
+      <tr>
+        <th>商品コード</th>
+        <th>商品名</th>
+        <th class="text-end">在庫数</th>
+        <th class="text-end">価格（円）</th>
+        <th>更新日時</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in products %}
+      <tr>
+        <td><code>{{ p.product_code }}</code></td>
+        <td>
+          {{ p.name }}
+          {% if p.is_restricted %}
+            <span class="badge bg-warning text-dark ms-1">月1本制限</span>
+          {% endif %}
+        </td>
+        <td class="text-end {% if p.stock <= threshold %}stock-low{% endif %}">
+          {{ p.stock }}
+          {% if p.stock <= threshold %}
+            <span class="badge bg-danger ms-1">要補充</span>
+          {% endif %}
+        </td>
+        <td class="text-end">{{ "{:,}".format(p.price) }}</td>
+        <td><small class="text-muted">{{ p.updated_at }}</small></td>
+        <td class="text-end">
+          <a href="/products/{{ p.id }}/edit" class="btn btn-sm btn-outline-secondary me-1">編集</a>
+          <form method="post" action="/products/{{ p.id }}/delete" style="display:inline"
+                onsubmit="return confirm('「{{ p.name }}」を削除しますか？')">
+            <button type="submit" class="btn btn-sm btn-outline-danger">削除</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="text-center text-muted py-5">
+  <p>商品が登録されていません。</p>
+  <a href="/products/add" class="btn btn-primary">最初の商品を追加</a>
+</div>
+{% endif %}
+{% endblock %}
