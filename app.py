@@ -6,6 +6,7 @@ import os
 import secrets
 import smtplib
 import sqlite3
+import unicodedata
 import urllib.parse
 from email.mime.text import MIMEText
 
@@ -80,6 +81,11 @@ def init_db():
             )
         """)
         conn.commit()
+
+
+def normalize_code(s: str) -> str:
+    """商品コード照合用の正規化：前後スペース除去＋全角英数字→半角。"""
+    return unicodedata.normalize("NFKC", s.strip())
 
 
 def is_restricted_product(name: str) -> bool:
