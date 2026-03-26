@@ -846,6 +846,15 @@ def sync_push():
 
     app.logger.info(f"[sync_push] カラーミー取得商品数: {len(cm_products)}")
 
+    # variantの最初の1件のフィールドをログ出力してoption_idのキー名を確認
+    for cm_p in cm_products:
+        variants = cm_p.get("variants", [])
+        if isinstance(variants, list) and variants:
+            first_variant = variants[0]
+            app.logger.info(f"[sync_push DEBUG] variantのキー一覧: {list(first_variant.keys())}")
+            app.logger.info(f"[sync_push DEBUG] variant全データ: {json.dumps(first_variant, ensure_ascii=False)}")
+            break
+
     # normalize_code(model_number) -> {product_id, option_id, product_name} のインデックスを構築
     cm_variant_index = {}
     for cm_p in cm_products:
