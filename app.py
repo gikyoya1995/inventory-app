@@ -844,18 +844,8 @@ def sync_push():
         flash(f"カラーミーからの商品取得に失敗しました: {e}", "danger")
         return redirect(url_for("sync"))
 
-    app.logger.info(f"[sync_push] カラーミー取得商品数: {len(cm_products)}")
-
-    # variantの最初の1件のフィールドをログ出力してoption_idのキー名を確認
-    for cm_p in cm_products:
-        variants = cm_p.get("variants", [])
-        if isinstance(variants, list) and variants:
-            first_variant = variants[0]
-            app.logger.info(f"[sync_push DEBUG] variantのキー一覧: {list(first_variant.keys())}")
-            app.logger.info(f"[sync_push DEBUG] variant全データ: {json.dumps(first_variant, ensure_ascii=False)}")
-            break
-
-    # normalize_code(model_number) -> {product_id, option_id, product_name} のインデックスを構築
+    # normalize_code(model_number) -> {variant_product_id, product_name} のインデックスを構築
+    # variantの product_id が在庫更新エンドポイントで使うID
     cm_variant_index = {}
     for cm_p in cm_products:
         variants = cm_p.get("variants", [])
@@ -867,17 +857,11 @@ def sync_push():
             model_num = normalize_code(variant.get("model_number"))
             if model_num:
                 cm_variant_index[model_num] = {
-                    "product_id":   cm_p["id"],
-                    "option_id":    variant.get("id"),
+                    "product_id":   variant.get("product_id"),
                     "product_name": cm_p.get("name", ""),
                 }
 
     app.logger.info(f"[sync_push] インデックス件数: {len(cm_variant_index)}")
-    app.logger.info(f"[sync_push] インデックスキー先頭5件: {list(cm_variant_index.keys())[:5]}")
-
-    with get_db() as conn:
-        sample = conn.execute("SELECT product_code FROM products LIMIT 3").fetchall()
-    app.logger.info(f"[sync_push] ローカルproduct_code先頭3件（正規化後）: {[normalize_code(r['product_code']) for r in sample]}")
 
     with get_db() as conn:
         local_products = conn.execute("SELECT * FROM products").fetchall()
@@ -895,25 +879,22 @@ def sync_push():
             not_found.append({"code": lp["product_code"], "name": lp["name"]})
             continue
 
-        option_id  = match.get("option_id")
-        product_id = match["product_id"]
-
-        if not option_id:
-            # option_id が取得できない場合はスキップ
-            app.logger.warning(f"sync_push: option_id未取得のためスキップ code={lp['product_code']}")
-            skipped.append({"code": lp["product_code"], "name": lp["name"], "reason": "option_id未取得"})
+        product_id = match.get("product_id")
+        if not product_id:
+            app.logger.warning(f"sync_push: product_id未取得のためスキップ code={lp['product_code']}")
+            skipped.append({"code": lp["product_code"], "name": lp["name"], "reason": "product_id未取得"})
             continue
 
         try:
             resp = requests.put(
-                f"{COLORME_API_BASE}/products/{product_id}/options/{option_id}.json",
+                f"{COLORME_API_BASE}/products/{product_id}.json",
                 headers=colorme_headers(),
-                json={"option": {"stock": lp["stock"]}},
+                json={"product": {"stocks": lp["stock"]}},
                 timeout=60,
             )
             resp.raise_for_status()
             updated.append({"code": lp["product_code"], "name": lp["name"], "stock": lp["stock"]})
-            app.logger.info(f"sync_push: 更新成功 code={lp['product_code']} stock={lp['stock']}")
+            app.logger.info(f"sync_push: 更新成功 code={lp['product_code']} product_id={product_id} stock={lp['stock']}")
         except requests.RequestException as e:
             app.logger.error(f"sync_push: 更新失敗 code={lp['product_code']} error={e}")
             errors.append({"code": lp["product_code"], "name": lp["name"], "error": str(e)})
