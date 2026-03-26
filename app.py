@@ -6,7 +6,9 @@ import os
 import secrets
 import smtplib
 import sqlite3
+import threading
 import urllib.parse
+import uuid
 from email.mime.text import MIMEText
 
 import requests
@@ -178,6 +180,133 @@ def colorme_get_all_products() -> list:
         http.close()
 
     return products
+
+
+# ─── バックグラウンド同期ジョブ管理 ───────────────────────────────────────────
+
+# job_id -> {"status": "running"|"done"|"error", "result": {...}, "message": "..."}
+_sync_jobs: dict = {}
+
+
+def _run_sync_push(job_id: str) -> None:
+    """sync_push の重い処理をバックグラウンドスレッドで実行する。"""
+    with app.app_context():
+        try:
+            cm_products = colorme_get_all_products()
+
+            cm_variant_index = {}
+            for cm_p in cm_products:
+                variants = cm_p.get("variants", [])
+                if not isinstance(variants, list):
+                    continue
+                for variant in variants:
+                    if not isinstance(variant, dict):
+                        continue
+                    model_num = variant.get("model_number", "")
+                    if model_num:
+                        cm_variant_index[model_num] = {
+                            "product_id":    cm_p["id"],
+                            "option1_value": variant.get("option1_value"),
+                            "option2_value": variant.get("option2_value"),
+                            "product_name":  cm_p.get("name", ""),
+                        }
+
+            with get_db() as conn:
+                local_products = conn.execute("SELECT * FROM products").fetchall()
+
+            updated   = []
+            skipped   = []
+            not_found = []
+            errors    = []
+
+            for lp in local_products:
+                code  = lp["product_code"]
+                match = cm_variant_index.get(code)
+                if not match:
+                    not_found.append({"code": code, "name": lp["name"]})
+                    continue
+
+                variant_payload = {"stocks": lp["stock"]}
+                if match["option1_value"] is not None:
+                    variant_payload["option1_value"] = match["option1_value"]
+                if match["option2_value"] is not None:
+                    variant_payload["option2_value"] = match["option2_value"]
+
+                try:
+                    resp = requests.put(
+                        f"{COLORME_API_BASE}/products/{match['product_id']}.json",
+                        headers=colorme_headers(),
+                        json={"product": {"variants": [variant_payload]}},
+                        timeout=15,
+                    )
+                    resp.raise_for_status()
+                    updated.append({"code": code, "name": lp["name"], "stock": lp["stock"]})
+                except requests.RequestException as e:
+                    errors.append({"code": code, "name": lp["name"], "error": str(e)})
+
+            result = {
+                "direction": "push",
+                "updated":   updated,
+                "skipped":   skipped,
+                "not_found": not_found,
+                "errors":    errors,
+            }
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            set_setting("last_sync_push",   now_str)
+            set_setting("last_sync_result", json.dumps(result, ensure_ascii=False))
+            _sync_jobs[job_id] = {"status": "done", "result": result}
+        except Exception as e:
+            _sync_jobs[job_id] = {"status": "error", "message": str(e)}
+
+
+def _run_sync_pull(job_id: str) -> None:
+    """sync_pull の重い処理をバックグラウンドスレッドで実行する。"""
+    with app.app_context():
+        try:
+            cm_products = colorme_get_all_products()
+
+            updated   = []
+            not_found = []
+
+            with get_db() as conn:
+                for cm_p in cm_products:
+                    product_name = cm_p.get("name", "")
+                    variants = cm_p.get("variants", [])
+                    if not isinstance(variants, list):
+                        continue
+                    for variant in variants:
+                        if not isinstance(variant, dict):
+                            continue
+                        code     = variant.get("model_number", "")
+                        quantity = variant.get("stocks", 0)
+                        if not code:
+                            continue
+                        existing = conn.execute(
+                            "SELECT id FROM products WHERE product_code=?", (code,)
+                        ).fetchone()
+                        if existing:
+                            conn.execute(
+                                "UPDATE products SET stock=?, updated_at=CURRENT_TIMESTAMP WHERE product_code=?",
+                                (quantity, code),
+                            )
+                            updated.append({"code": code, "name": product_name, "stock": quantity})
+                        else:
+                            not_found.append({"code": code, "name": product_name})
+                conn.commit()
+                check_and_alert(conn)
+
+            result = {
+                "direction": "pull",
+                "updated":   updated,
+                "not_found": not_found,
+                "errors":    [],
+            }
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            set_setting("last_sync_pull",   now_str)
+            set_setting("last_sync_result", json.dumps(result, ensure_ascii=False))
+            _sync_jobs[job_id] = {"status": "done", "result": result}
+        except Exception as e:
+            _sync_jobs[job_id] = {"status": "error", "message": str(e)}
 
 
 # ─── メール通知 ────────────────────────────────────────────────────────────────
@@ -675,13 +804,23 @@ def sync():
 
     last_result_json = get_setting("last_sync_result", "")
     last_result = json.loads(last_result_json) if last_result_json else None
+    job_id = request.args.get("job")
 
     return render_template(
         "sync.html",
         last_push=get_setting("last_sync_push"),
         last_pull=get_setting("last_sync_pull"),
         last_result=last_result,
+        job_id=job_id,
     )
+
+
+@app.route("/sync/status/<job_id>")
+def sync_job_status(job_id):
+    job = _sync_jobs.get(job_id)
+    if not job:
+        return {"status": "not_found"}, 404
+    return job
 
 
 @app.route("/sync/variants")
@@ -831,146 +970,28 @@ def sync_debug():
 
 @app.route("/sync/push", methods=["POST"])
 def sync_push():
-    """ローカルの在庫数をカラーミーショップに反映する。"""
+    """ローカルの在庫数をカラーミーショップに反映する（バックグラウンド実行）。"""
     if not colorme_is_connected():
         flash("カラーミーショップと連携されていません。", "danger")
         return redirect(url_for("settings"))
 
-    try:
-        cm_products = colorme_get_all_products()
-    except requests.RequestException as e:
-        flash(f"カラーミーからの商品取得に失敗しました: {e}", "danger")
-        return redirect(url_for("sync"))
-
-    # variants レベルの型番でインデックス化
-    # variant.model_number -> {product_id, option1_value, option2_value, product_name}
-    cm_variant_index = {}
-    for cm_p in cm_products:
-        variants = cm_p.get("variants", [])
-        if not isinstance(variants, list):
-            continue
-        for variant in variants:
-            if not isinstance(variant, dict):
-                continue
-            model_num = variant.get("model_number", "")
-            if model_num:
-                cm_variant_index[model_num] = {
-                    "product_id":    cm_p["id"],
-                    "option1_value": variant.get("option1_value"),
-                    "option2_value": variant.get("option2_value"),
-                    "product_name":  cm_p.get("name", ""),
-                }
-
-    with get_db() as conn:
-        local_products = conn.execute("SELECT * FROM products").fetchall()
-
-    updated   = []
-    skipped   = []
-    not_found = []
-    errors    = []
-
-    for lp in local_products:
-        code  = lp["product_code"]
-        match = cm_variant_index.get(code)
-
-        if not match:
-            not_found.append({"code": code, "name": lp["name"]})
-            continue
-
-        # variantをoption値で特定してstocksを更新
-        variant_payload = {"stocks": lp["stock"]}
-        if match["option1_value"] is not None:
-            variant_payload["option1_value"] = match["option1_value"]
-        if match["option2_value"] is not None:
-            variant_payload["option2_value"] = match["option2_value"]
-
-        try:
-            resp = requests.put(
-                f"{COLORME_API_BASE}/products/{match['product_id']}.json",
-                headers=colorme_headers(),
-                json={"product": {"variants": [variant_payload]}},
-                timeout=15,
-            )
-            resp.raise_for_status()
-            updated.append({"code": code, "name": lp["name"], "stock": lp["stock"]})
-        except requests.RequestException as e:
-            errors.append({"code": code, "name": lp["name"], "error": str(e)})
-
-    result = {
-        "direction": "push",
-        "updated":   updated,
-        "skipped":   skipped,
-        "not_found": not_found,
-        "errors":    errors,
-    }
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    set_setting("last_sync_push",   now_str)
-    set_setting("last_sync_result", json.dumps(result, ensure_ascii=False))
-
-    flash(f"プッシュ完了：{len(updated)} 件更新、{len(not_found)} 件未マッチ、{len(errors)} 件エラー", "success" if not errors else "warning")
-    return redirect(url_for("sync"))
+    job_id = str(uuid.uuid4())
+    _sync_jobs[job_id] = {"status": "running"}
+    threading.Thread(target=_run_sync_push, args=(job_id,), daemon=True).start()
+    return redirect(url_for("sync", job=job_id))
 
 
 @app.route("/sync/pull", methods=["POST"])
 def sync_pull():
-    """カラーミーショップの在庫数をローカルに反映する。"""
+    """カラーミーショップの在庫数をローカルに反映する（バックグラウンド実行）。"""
     if not colorme_is_connected():
         flash("カラーミーショップと連携されていません。", "danger")
         return redirect(url_for("settings"))
 
-    try:
-        cm_products = colorme_get_all_products()
-    except requests.RequestException as e:
-        flash(f"カラーミーからの商品取得に失敗しました: {e}", "danger")
-        return redirect(url_for("sync"))
-
-    updated   = []
-    not_found = []
-
-    with get_db() as conn:
-        for cm_p in cm_products:
-            product_name = cm_p.get("name", "")
-            variants = cm_p.get("variants", [])
-            if not isinstance(variants, list):
-                continue
-
-            for variant in variants:
-                if not isinstance(variant, dict):
-                    continue
-
-                code     = variant.get("model_number", "")
-                quantity = variant.get("stocks", 0)
-                if not code:
-                    continue
-
-                existing = conn.execute(
-                    "SELECT id FROM products WHERE product_code=?", (code,)
-                ).fetchone()
-
-                if existing:
-                    conn.execute(
-                        "UPDATE products SET stock=?, updated_at=CURRENT_TIMESTAMP WHERE product_code=?",
-                        (quantity, code),
-                    )
-                    updated.append({"code": code, "name": product_name, "stock": quantity})
-                else:
-                    not_found.append({"code": code, "name": product_name})
-
-        conn.commit()
-        check_and_alert(conn)
-
-    result = {
-        "direction": "pull",
-        "updated":   updated,
-        "not_found": not_found,
-        "errors":    [],
-    }
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    set_setting("last_sync_pull",   now_str)
-    set_setting("last_sync_result", json.dumps(result, ensure_ascii=False))
-
-    flash(f"プル完了：{len(updated)} 件更新、{len(not_found)} 件はローカル未登録（スキップ）", "success")
-    return redirect(url_for("sync"))
+    job_id = str(uuid.uuid4())
+    _sync_jobs[job_id] = {"status": "running"}
+    threading.Thread(target=_run_sync_pull, args=(job_id,), daemon=True).start()
+    return redirect(url_for("sync", job=job_id))
 
 
 # ─── 起動時DB初期化（gunicorn含む全起動方式で実行） ────────────────────────────

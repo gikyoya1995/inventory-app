@@ -4,6 +4,44 @@
 {% block content %}
 <h2 class="mb-4">カラーミーショップ 在庫同期</h2>
 
+{% if job_id %}
+<!-- 同期中ポーリングUI -->
+<div id="sync-running" class="card border-primary mb-4">
+  <div class="card-body text-center py-4">
+    <div class="spinner-border text-primary mb-3" role="status"></div>
+    <p class="fw-bold mb-1" id="sync-message">同期中です。しばらくお待ちください...</p>
+    <p class="text-muted small">カラーミーAPIからデータを取得しています。完了後に自動で結果を表示します。</p>
+  </div>
+</div>
+<div id="sync-result-area" style="display:none"></div>
+
+<script>
+(function() {
+  const jobId = {{ job_id | tojson }};
+  const interval = setInterval(async () => {
+    try {
+      const res = await fetch(`/sync/status/${jobId}`);
+      const data = await res.json();
+      if (data.status === "done") {
+        clearInterval(interval);
+        document.getElementById("sync-running").style.display = "none";
+        location.href = "/sync";
+      } else if (data.status === "error") {
+        clearInterval(interval);
+        document.getElementById("sync-running").style.display = "none";
+        const area = document.getElementById("sync-result-area");
+        area.style.display = "";
+        area.innerHTML = `<div class="alert alert-danger">同期中にエラーが発生しました：${data.message}</div>`;
+      }
+    } catch (e) {
+      // ネットワークエラーは無視して継続
+    }
+  }, 2000);
+})();
+</script>
+
+{% else %}
+
 <div class="row g-4 mb-4">
 
   <!-- プッシュ -->
@@ -140,4 +178,6 @@
 <div class="mt-3">
   <a href="/sync/variants" class="btn btn-outline-secondary btn-sm">型番付きオプション一覧を確認</a>
 </div>
+
+{% endif %}
 {% endblock %}
