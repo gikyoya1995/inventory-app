@@ -7,6 +7,7 @@ import secrets
 import smtplib
 import sqlite3
 import threading
+import unicodedata
 import urllib.parse
 import uuid
 from email.mime.text import MIMEText
@@ -86,6 +87,11 @@ def init_db():
 
 def is_restricted_product(name: str) -> bool:
     return any(kw in name for kw in RESTRICTED_KEYWORDS)
+
+
+def normalize_code(s: str) -> str:
+    """商品コード照合用の正規化：前後スペース除去＋全角英数字→半角。"""
+    return unicodedata.normalize("NFKC", s.strip())
 
 
 def default_redirect_uri() -> str:
@@ -196,7 +202,7 @@ def _run_sync_push(job_id: str) -> None:
                 for variant in variants:
                     if not isinstance(variant, dict):
                         continue
-                    model_num = variant.get("model_number", "")
+                    model_num = normalize_code(variant.get("model_number", ""))
                     if model_num:
                         cm_variant_index[model_num] = {
                             "product_id":    cm_p["id"],
@@ -214,7 +220,7 @@ def _run_sync_push(job_id: str) -> None:
             errors    = []
 
             for lp in local_products:
-                code  = lp["product_code"]
+                code  = normalize_code(lp["product_code"])
                 match = cm_variant_index.get(code)
                 if not match:
                     not_found.append({"code": code, "name": lp["name"]})
@@ -263,6 +269,13 @@ def _run_sync_pull(job_id: str) -> None:
             not_found = []
 
             with get_db() as conn:
+                # ローカル商品コードを正規化してメモリ上にインデックス化
+                # normalize_code(product_code) -> product_code（元の値）
+                local_index = {
+                    normalize_code(row["product_code"]): row["product_code"]
+                    for row in conn.execute("SELECT product_code FROM products").fetchall()
+                }
+
                 for cm_p in cm_products:
                     product_name = cm_p.get("name", "")
                     variants = cm_p.get("variants", [])
@@ -271,19 +284,17 @@ def _run_sync_pull(job_id: str) -> None:
                     for variant in variants:
                         if not isinstance(variant, dict):
                             continue
-                        code     = variant.get("model_number", "")
+                        code     = normalize_code(variant.get("model_number", ""))
                         quantity = variant.get("stocks", 0)
                         if not code:
                             continue
-                        existing = conn.execute(
-                            "SELECT id FROM products WHERE product_code=?", (code,)
-                        ).fetchone()
-                        if existing:
+                        original_code = local_index.get(code)
+                        if original_code:
                             conn.execute(
                                 "UPDATE products SET stock=?, updated_at=CURRENT_TIMESTAMP WHERE product_code=?",
-                                (quantity, code),
+                                (quantity, original_code),
                             )
-                            updated.append({"code": code, "name": product_name, "stock": quantity})
+                            updated.append({"code": original_code, "name": product_name, "stock": quantity})
                         else:
                             not_found.append({"code": code, "name": product_name})
                 conn.commit()
