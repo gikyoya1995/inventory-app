@@ -86,6 +86,11 @@ def is_restricted_product(name: str) -> bool:
     return any(kw in name for kw in RESTRICTED_KEYWORDS)
 
 
+def default_redirect_uri() -> str:
+    base = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("APP_URL") or "http://localhost:5001"
+    return base.rstrip("/") + "/oauth/callback"
+
+
 # ─── 設定ヘルパー ──────────────────────────────────────────────────────────────
 
 def get_setting(key: str, default: str = "") -> str:
@@ -563,7 +568,7 @@ def settings():
         "settings.html",
         client_id=get_setting("client_id"),
         client_secret=get_setting("client_secret"),
-        redirect_uri=get_setting("redirect_uri", "http://localhost:5001/oauth/callback"),
+        redirect_uri=get_setting("redirect_uri", default_redirect_uri()),
         is_connected=colorme_is_connected(),
         access_token_preview=get_setting("access_token")[:8] + "…" if get_setting("access_token") else "",
     )
@@ -574,7 +579,7 @@ def settings():
 @app.route("/oauth/start")
 def oauth_start():
     client_id    = get_setting("client_id")
-    redirect_uri = get_setting("redirect_uri", "http://localhost:5001/oauth/callback")
+    redirect_uri = get_setting("redirect_uri", default_redirect_uri())
 
     if not client_id:
         flash("先にクライアントIDを設定してください。", "danger")
@@ -612,7 +617,7 @@ def oauth_callback():
     code         = request.args.get("code")
     client_id    = get_setting("client_id")
     client_secret = get_setting("client_secret")
-    redirect_uri = get_setting("redirect_uri", "http://localhost:5001/oauth/callback")
+    redirect_uri = get_setting("redirect_uri", default_redirect_uri())
 
     if not code:
         flash("認証コードが取得できませんでした。", "danger")
