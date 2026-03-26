@@ -844,6 +844,8 @@ def sync_push():
         flash(f"カラーミーからの商品取得に失敗しました: {e}", "danger")
         return redirect(url_for("sync"))
 
+    app.logger.info(f"[sync_push] カラーミー取得商品数: {len(cm_products)}")
+
     # normalize_code(model_number) -> {product_id, option_id, product_name} のインデックスを構築
     cm_variant_index = {}
     for cm_p in cm_products:
@@ -860,6 +862,13 @@ def sync_push():
                     "option_id":    variant.get("id"),
                     "product_name": cm_p.get("name", ""),
                 }
+
+    app.logger.info(f"[sync_push] インデックス件数: {len(cm_variant_index)}")
+    app.logger.info(f"[sync_push] インデックスキー先頭5件: {list(cm_variant_index.keys())[:5]}")
+
+    with get_db() as conn:
+        sample = conn.execute("SELECT product_code FROM products LIMIT 3").fetchall()
+    app.logger.info(f"[sync_push] ローカルproduct_code先頭3件（正規化後）: {[normalize_code(r['product_code']) for r in sample]}")
 
     with get_db() as conn:
         local_products = conn.execute("SELECT * FROM products").fetchall()
