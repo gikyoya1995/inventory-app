@@ -826,7 +826,7 @@ def sync_push():
         return redirect(url_for("sync"))
 
     # variants レベルの型番でインデックス化
-    # variant.model_number -> {product_id, option1_value, option2_value, product_name}
+    # normalize_code(model_number) -> {product_id, option_id, product_name}
     cm_variant_index = {}
     for cm_p in cm_products:
         variants = cm_p.get("variants", [])
@@ -835,13 +835,12 @@ def sync_push():
         for variant in variants:
             if not isinstance(variant, dict):
                 continue
-            model_num = variant.get("model_number", "")
+            model_num = normalize_code(variant.get("model_number", ""))
             if model_num:
                 cm_variant_index[model_num] = {
-                    "product_id":    cm_p["id"],
-                    "option1_value": variant.get("option1_value"),
-                    "option2_value": variant.get("option2_value"),
-                    "product_name":  cm_p.get("name", ""),
+                    "product_id":   cm_p["id"],
+                    "option_id":    variant.get("id"),
+                    "product_name": cm_p.get("name", ""),
                 }
 
     with get_db() as conn:
@@ -853,31 +852,28 @@ def sync_push():
     errors    = []
 
     for lp in local_products:
-        code  = lp["product_code"]
+        code  = normalize_code(lp["product_code"])
         match = cm_variant_index.get(code)
 
         if not match:
-            not_found.append({"code": code, "name": lp["name"]})
+            not_found.append({"code": lp["product_code"], "name": lp["name"]})
             continue
 
-        # variantをoption値で特定してstocksを更新
-        variant_payload = {"stocks": lp["stock"]}
-        if match["option1_value"] is not None:
-            variant_payload["option1_value"] = match["option1_value"]
-        if match["option2_value"] is not None:
-            variant_payload["option2_value"] = match["option2_value"]
+        if not match.get("option_id"):
+            errors.append({"code": lp["product_code"], "name": lp["name"], "error": "option_id が取得できませんでした"})
+            continue
 
         try:
             resp = requests.put(
-                f"{COLORME_API_BASE}/products/{match['product_id']}.json",
+                f"{COLORME_API_BASE}/products/{match['product_id']}/options/{match['option_id']}.json",
                 headers=colorme_headers(),
-                json={"product": {"variants": [variant_payload]}},
+                json={"option": {"stock": lp["stock"]}},
                 timeout=15,
             )
             resp.raise_for_status()
-            updated.append({"code": code, "name": lp["name"], "stock": lp["stock"]})
+            updated.append({"code": lp["product_code"], "name": lp["name"], "stock": lp["stock"]})
         except requests.RequestException as e:
-            errors.append({"code": code, "name": lp["name"], "error": str(e)})
+            errors.append({"code": lp["product_code"], "name": lp["name"], "error": str(e)})
 
     result = {
         "direction": "push",
